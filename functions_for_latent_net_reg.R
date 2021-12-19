@@ -1,12 +1,6 @@
 # Code for Submission
 # Function Code
-########################################### Standard AMEN models with diff. Multi. Effects
-# standard AME model but multiplicative effects are U\LambdaV^T where U/V are 
-# binary (this is more efficient for sampling multi effects if underlying structure
-# is believed to come from community structure)
 
-# most from ame function from 'amen' package, initialU/initialV are initializations of
-# U and V which shouold be n x k matrices
 library(latex2exp);library(irlba);library(pbivnorm); library(TruncatedNormal)
 library(amen); library(dplyr); library(ggplot2); library(reshape); library(bayesplot);
 library(R.utils);library(latex2exp)
@@ -288,7 +282,16 @@ rUV_fc <- function (E, U, V, rho, s2 = 1, shrink = TRUE)
 }
 
 
+########################################### Standard AMEN models with diff. 
+###  Multi. Effects
+# standard AME function from 'amen' package
+# but multiplicative effects are U\LambdaV^T where U/V are 
+# binary (this is more efficient for sampling multi effects if underlying structure
+# is believed to come from community structure)
 
+# initialU/initialV are initializations of
+# U and V which should be n x k matrices 
+# ( put same matrix if only doing one estimate of communities as in paper)
 
 myAME_estimateLambda <-function (Y, Xdyad = NULL, Xrow = NULL, Xcol = NULL, rvar = !(model == 
                                                                                        "rrl"), cvar = TRUE, dcor = !symmetric, nvar = TRUE, R = 0, 
