@@ -11,6 +11,284 @@ library(latex2exp);library(irlba);library(pbivnorm); library(TruncatedNormal)
 library(amen); library(dplyr); library(ggplot2); library(reshape); library(bayesplot);
 library(R.utils);library(latex2exp)
 
+# functions from AMEN version 1.3 in case 
+# there are any version problems
+# X: n x n x p arryay
+# beta: p x 1 vector
+Xbeta <- function (X, beta) 
+{
+  XB <- matrix(0, nrow = dim(X)[1], ncol = dim(X)[2])
+  for (k in seq(1, length(beta), length = length(beta))) {
+    XB <- XB + beta[k] * X[, , k]
+  }
+  XB
+}
+
+# Function for simulating Y for censored binary likelihood
+#' @param EZ: n x n matrix of expected Z values
+#' @param rho: current rho
+#' @param odmax: n x1 vector of max censoring
+simY_cbin <- function (EZ, rho, odmax, YO = NULL) 
+{
+  if (length(odmax) == 1) {
+    odmax <- rep(odmax, nrow(EZ))
+  }
+  ZS <- simZ(EZ, rho)
+  diag(ZS) <- -Inf
+  if (!is.null(YO)) {
+    ZS[is.na(YO)] <- -Inf
+  }
+  YS <- ZS * 0
+  for (i in 1:nrow(EZ)) {
+    rs <- rank(ZS[i, ]) - (nrow(EZ) - odmax[i])
+    YS[i, ] <- rs * (rs > 0) * (ZS[i, ] > 0)
+    YS[i, YS[i, ] > 0] <- match(YS[i, YS[i, ] > 0], sort(unique(YS[i, 
+                                                                   YS[i, ] > 0])))
+  }
+  diag(YS) <- NA
+  if (!is.null(YO)) {
+    YS[is.na(YO)] <- NA
+  }
+  YS
+}
+
+
+# Function for simulating Z for censored binary likelihood
+#' @param Z: n x n matrix of current Z values
+#' @param EZ: n x n matrix of expected Z value
+#' @param rho: current rho
+#' @param Y: n x n network
+#' @param odmax: n x1 vector of max censoring
+#' @param odobs: out deegree
+rZ_cbin_fc <- function (Z, EZ, rho, Y, odmax, odobs) 
+{
+  sz <- sqrt(1 - rho^2)
+  ut <- upper.tri(EZ)
+  lt <- lower.tri(EZ)
+  for (y in sample(0:1)) {
+    if (y == 1) {
+      ub <- Inf
+      lbm <- matrix(pmax(apply(Z - (Y != 0) * (Inf^(Y != 
+                                                      0)), 1, max, na.rm = TRUE), 0), nrow(Z), nrow(Z))
+    }
+    if (y == 0) {
+      lb <- -Inf
+      ubm <- matrix(apply(Z + (Y != 1) * (Inf^(Y != 1)), 
+                          1, min, na.rm = TRUE), nrow(Z), nrow(Z))
+      ubm[odobs < odmax] <- 0
+    }
+    up <- ut & Y == y
+    if (y == 0) {
+      ub <- ubm[up]
+    }
+    if (y == 1) {
+      lb <- lbm[up]
+    }
+    ez <- EZ[up] + rho * (t(Z)[up] - t(EZ)[up])
+    Z[up] <- ez + sz * qnorm(runif(sum(up), pnorm((lb - 
+                                                     ez)/sz), pnorm((ub - ez)/sz)))
+    up <- lt & Y == y
+    if (y == 0) {
+      ub <- ubm[up]
+    }
+    if (y == 1) {
+      lb <- lbm[up]
+    }
+    ez <- EZ[up] + rho * (t(Z)[up] - t(EZ)[up])
+    Z[up] <- ez + sz * qnorm(runif(sum(up), pnorm((lb - 
+                                                     ez)/sz), pnorm((ub - ez)/sz)))
+  }
+  Z[is.na(Y)] <- rnorm(sum(is.na(Y)), EZ[is.na(Y)], 1)
+  Z
+}
+
+
+
+# Simulate from Wishart
+#' @param S0: pos. definite matrix
+#' @param nu: pos. integer
+rwish <- function (S0, nu = dim(S0)[1] + 1) 
+{
+  sS0 <- chol(S0)
+  Z <- matrix(rnorm(nu * dim(S0)[1]), nu, dim(S0)[1]) %*% 
+    sS0
+  t(Z) %*% Z
+}
+
+
+# Updating multi. effects in standard amen way for sym
+#' @param E: Residual matrix
+#' @param U: Current U
+#' @param V: Current v
+#' @param s2: dyadic variace
+#' @param shrink: shrink with prior or not
+
+rUV_sym_fc<- function (E, U, V, s2 = 1, shrink = TRUE) 
+{
+  R <- ncol(U)
+  n <- nrow(U)
+  L <- diag((V[1, ]/U[1, ]), nrow = R)
+  L[is.na(L)] <- 1
+  if (shrink) {
+    ivU <- diag(rgamma(R, (2 + n)/2, (1 + apply(U^2, 2, 
+                                                sum))/2), nrow = R)
+  }
+  if (!shrink) {
+    ivU <- diag(1/n, nrow = R)
+  }
+  for (i in rep(sample(1:n), 4)) {
+    l <- L %*% (apply(U * E[i, ], 2, sum) - U[i, ] * E[i, 
+                                                       i])/s2
+    iQ <- solve((ivU + L %*% (crossprod(U) - U[i, ] %*% 
+                                t(U[i, ])) %*% L/s2))
+    U[i, ] <- iQ %*% l + t(chol(iQ)) %*% rnorm(R)
+  }
+  for (r in 1:R) {
+    Er <- E - U[, -r, drop = FALSE] %*% L[-r, -r, drop = FALSE] %*% 
+      t(U[, -r, drop = FALSE])
+    l <- sum((Er * (U[, r] %*% t(U[, r])))[upper.tri(Er)])/s2
+    iq <- 1/(1 + sum(((U[, r] %*% t(U[, r]))^2)[upper.tri(Er)])/s2)
+    L[r, r] <- rnorm(1, iq * l, sqrt(iq))
+  }
+  list(U = U, V = U %*% L)
+}
+
+
+# Updating multi. effects in standard amen way assuming
+# same across replicates
+#' @param E.T: Square residual relational matrix
+#' @param U: Current U
+#' @param V: Current v
+#' @param rho: current rho
+#' @param s2: dyadic variace
+#' @param shrink: shrink with prior or not
+rUV_rep_fc <- function (E.T, U, V, rho, s2 = 1, shrink = TRUE) 
+{
+  Time <- dim(E.T)[3]
+  R <- ncol(U)
+  n <- nrow(U)
+  UV <- cbind(U, V)
+  if (shrink) {
+    Suv <- solve(rwish(solve(diag(nrow = 2 * R) + t(UV) %*% 
+                               UV), n + R + 2))
+  }
+  if (!shrink) {
+    Suv <- diag(n, nrow = 2 * R)
+  }
+  Se <- matrix(c(1, rho, rho, 1), 2, 2) * s2
+  iSe2 <- mhalf(solve(Se))
+  g <- iSe2[1, 1]
+  d <- iSe2[1, 2]
+  get.Er <- function(E, UVmr) {
+    return(E - UVmr)
+  }
+  get.Es <- function(Er, g, d) {
+    n <- sqrt(length(Er))
+    return((g^2 + d^2) * matrix(Er, n) + 2 * g * d * matrix(Er, 
+                                                            n, byrow = T))
+  }
+  for (r in sample(1:R)) {
+    UVmr <- tcrossprod(U[, -r], V[, -r])
+    Er.t <- apply(E.T, 3, get.Er, UVmr)
+    Es.t <- apply(Er.t, 2, get.Es, g, d)
+    vr <- V[, r]
+    b0 <- c(Suv[r, -r] %*% solve(Suv[-r, -r]))
+    v0 <- c(Suv[r, r] - b0 %*% Suv[-r, r])
+    m0 <- cbind(U[, -r], V) %*% b0
+    ssv <- max(sum(vr^2), 1e-06)
+    a <- Time * (g^2 + d^2) * ssv + 1/v0
+    c <- -2 * Time * g * d/(a^2 + a * 2 * Time * g * d * 
+                              ssv)
+    Esv.vec <- rowSums(Es.t)
+    nEsv <- sqrt(length(Esv.vec))
+    Esv <- matrix(Esv.vec, nEsv) %*% vr
+    m1 <- Esv/a + c * vr * sum((Esv + m0/v0) * vr) + m0/(a * 
+                                                           v0)
+    ah <- sqrt(1/a)
+    bh <- (sqrt(1/a + ssv * c) - sqrt(1/a))/ssv
+    e <- rnorm(nrow(E.T[, , 1]))
+    U[, r] <- m1 + ah * e + bh * vr * sum(vr * e)
+    ur <- U[, r]
+    rv <- R + r
+    b0 <- c(Suv[rv, -rv] %*% solve(Suv[-rv, -rv]))
+    v0 <- c(Suv[rv, rv] - b0 %*% Suv[-rv, rv])
+    m0 <- cbind(U, V[, -r]) %*% b0
+    ssu <- max(sum(ur^2), 1e-06)
+    a <- Time * (g^2 + d^2) * ssu + 1/v0
+    c <- -2 * Time * g * d/(a^2 + a * 2 * Time * g * d * 
+                              ssu)
+    tEsu <- matrix(Esv.vec, nEsv, byrow = T) %*% ur
+    m1 <- tEsu/a + c * ur * sum((tEsu + m0/v0) * ur) + m0/(a * 
+                                                             v0)
+    ah <- sqrt(1/a)
+    bh <- (sqrt(1/a + ssu * c) - sqrt(1/a))/ssu
+    e <- rnorm(nrow(E.T[, , 1]))
+    V[, r] <- m1 + ah * e + bh * ur * sum(ur * e)
+  }
+  list(U = U, V = V)
+}
+
+# Updating multi. effects in standard amen way 
+#' @param E: Residual matrix
+#' @param U: Current U
+#' @param V: Current v
+#' @param s2: dyadic variace
+#' @param shrink: shrink with prior or not
+
+rUV_fc <- function (E, U, V, rho, s2 = 1, shrink = TRUE) 
+{
+  R <- ncol(U)
+  n <- nrow(U)
+  UV <- cbind(U, V)
+  if (shrink) {
+    Suv <- solve(rwish(solve(diag(nrow = 2 * R) + t(UV) %*% 
+                               UV), n + R + 2))
+  }
+  if (!shrink) {
+    Suv <- diag(n, nrow = 2 * R)
+  }
+  Se <- matrix(c(1, rho, rho, 1), 2, 2) * s2
+  iSe2 <- mhalf(solve(Se))
+  g <- iSe2[1, 1]
+  d <- iSe2[1, 2]
+  for (r in sample(1:R)) {
+    Er <- E - U[, -r] %*% t(V[, -r])
+    Es <- (g^2 + d^2) * Er + 2 * g * d * t(Er)
+    vr <- V[, r]
+    b0 <- c(Suv[r, -r] %*% solve(Suv[-r, -r]))
+    v0 <- c(Suv[r, r] - b0 %*% Suv[-r, r])
+    m0 <- cbind(U[, -r], V) %*% b0
+    ssv <- max(sum(vr^2), 1e-06)
+    a <- (g^2 + d^2) * ssv + 1/v0
+    c <- -2 * g * d/(a^2 + a * 2 * g * d * ssv)
+    Esv <- Es %*% vr
+    m1 <- Esv/a + c * vr * sum((Esv + m0/v0) * vr) + m0/(a * 
+                                                           v0)
+    ah <- sqrt(1/a)
+    bh <- (sqrt(1/a + ssv * c) - sqrt(1/a))/ssv
+    e <- rnorm(nrow(E))
+    U[, r] <- m1 + ah * e + bh * vr * sum(vr * e)
+    ur <- U[, r]
+    rv <- R + r
+    b0 <- c(Suv[rv, -rv] %*% solve(Suv[-rv, -rv]))
+    v0 <- c(Suv[rv, rv] - b0 %*% Suv[-rv, rv])
+    m0 <- cbind(U, V[, -r]) %*% b0
+    ssu <- max(sum(ur^2), 1e-06)
+    a <- (g^2 + d^2) * ssu + 1/v0
+    c <- -2 * g * d/(a^2 + a * 2 * g * d * ssu)
+    tEsu <- t(Es) %*% ur
+    m1 <- tEsu/a + c * ur * sum((tEsu + m0/v0) * ur) + m0/(a * 
+                                                             v0)
+    ah <- sqrt(1/a)
+    bh <- (sqrt(1/a + ssu * c) - sqrt(1/a))/ssu
+    e <- rnorm(nrow(E))
+    V[, r] <- m1 + ah * e + bh * ur * sum(ur * e)
+  }
+  list(U = U, V = V)
+}
+
+
+
 
 myAME_estimateLambda <-function (Y, Xdyad = NULL, Xrow = NULL, Xcol = NULL, rvar = !(model == 
                                                                                        "rrl"), cvar = TRUE, dcor = !symmetric, nvar = TRUE, R = 0, 
@@ -864,284 +1142,6 @@ myAME <-function (Y, Xdyad = NULL, Xrow = NULL, Xcol = NULL, rvar = !(model ==
 }
 
 
-# functions from AMEN version 1.3 in case 
-# there are any version problems
-# X: n x n x p arryay
-# beta: p x 1 vector
-Xbeta <- function (X, beta) 
-{
-  XB <- matrix(0, nrow = dim(X)[1], ncol = dim(X)[2])
-  for (k in seq(1, length(beta), length = length(beta))) {
-    XB <- XB + beta[k] * X[, , k]
-  }
-  XB
-}
-
-# Function for simulating Y for censored binary likelihood
-#' @param EZ: n x n matrix of expected Z values
-#' @param rho: current rho
-#' @param odmax: n x1 vector of max censoring
-simY_cbin <- function (EZ, rho, odmax, YO = NULL) 
-{
-  if (length(odmax) == 1) {
-    odmax <- rep(odmax, nrow(EZ))
-  }
-  ZS <- simZ(EZ, rho)
-  diag(ZS) <- -Inf
-  if (!is.null(YO)) {
-    ZS[is.na(YO)] <- -Inf
-  }
-  YS <- ZS * 0
-  for (i in 1:nrow(EZ)) {
-    rs <- rank(ZS[i, ]) - (nrow(EZ) - odmax[i])
-    YS[i, ] <- rs * (rs > 0) * (ZS[i, ] > 0)
-    YS[i, YS[i, ] > 0] <- match(YS[i, YS[i, ] > 0], sort(unique(YS[i, 
-                                                                   YS[i, ] > 0])))
-  }
-  diag(YS) <- NA
-  if (!is.null(YO)) {
-    YS[is.na(YO)] <- NA
-  }
-  YS
-}
-
-
-# Function for simulating Z for censored binary likelihood
-#' @param Z: n x n matrix of current Z values
-#' @param EZ: n x n matrix of expected Z value
-#' @param rho: current rho
-#' @param Y: n x n network
-#' @param odmax: n x1 vector of max censoring
-#' @param odobs: out deegree
-rZ_cbin_fc <- function (Z, EZ, rho, Y, odmax, odobs) 
-{
-  sz <- sqrt(1 - rho^2)
-  ut <- upper.tri(EZ)
-  lt <- lower.tri(EZ)
-  for (y in sample(0:1)) {
-    if (y == 1) {
-      ub <- Inf
-      lbm <- matrix(pmax(apply(Z - (Y != 0) * (Inf^(Y != 
-                                                      0)), 1, max, na.rm = TRUE), 0), nrow(Z), nrow(Z))
-    }
-    if (y == 0) {
-      lb <- -Inf
-      ubm <- matrix(apply(Z + (Y != 1) * (Inf^(Y != 1)), 
-                          1, min, na.rm = TRUE), nrow(Z), nrow(Z))
-      ubm[odobs < odmax] <- 0
-    }
-    up <- ut & Y == y
-    if (y == 0) {
-      ub <- ubm[up]
-    }
-    if (y == 1) {
-      lb <- lbm[up]
-    }
-    ez <- EZ[up] + rho * (t(Z)[up] - t(EZ)[up])
-    Z[up] <- ez + sz * qnorm(runif(sum(up), pnorm((lb - 
-                                                     ez)/sz), pnorm((ub - ez)/sz)))
-    up <- lt & Y == y
-    if (y == 0) {
-      ub <- ubm[up]
-    }
-    if (y == 1) {
-      lb <- lbm[up]
-    }
-    ez <- EZ[up] + rho * (t(Z)[up] - t(EZ)[up])
-    Z[up] <- ez + sz * qnorm(runif(sum(up), pnorm((lb - 
-                                                     ez)/sz), pnorm((ub - ez)/sz)))
-  }
-  Z[is.na(Y)] <- rnorm(sum(is.na(Y)), EZ[is.na(Y)], 1)
-  Z
-}
-
-
-
-# Simulate from Wishart
-#' @param S0: pos. definite matrix
-#' @param nu: pos. integer
-rwish <- function (S0, nu = dim(S0)[1] + 1) 
-{
-  sS0 <- chol(S0)
-  Z <- matrix(rnorm(nu * dim(S0)[1]), nu, dim(S0)[1]) %*% 
-    sS0
-  t(Z) %*% Z
-}
-
-
-# Updating multi. effects in standard amen way for sym
-#' @param E: Residual matrix
-#' @param U: Current U
-#' @param V: Current v
-#' @param s2: dyadic variace
-#' @param shrink: shrink with prior or not
-
-rUV_sym_fc<- function (E, U, V, s2 = 1, shrink = TRUE) 
-{
-  R <- ncol(U)
-  n <- nrow(U)
-  L <- diag((V[1, ]/U[1, ]), nrow = R)
-  L[is.na(L)] <- 1
-  if (shrink) {
-    ivU <- diag(rgamma(R, (2 + n)/2, (1 + apply(U^2, 2, 
-                                                sum))/2), nrow = R)
-  }
-  if (!shrink) {
-    ivU <- diag(1/n, nrow = R)
-  }
-  for (i in rep(sample(1:n), 4)) {
-    l <- L %*% (apply(U * E[i, ], 2, sum) - U[i, ] * E[i, 
-                                                       i])/s2
-    iQ <- solve((ivU + L %*% (crossprod(U) - U[i, ] %*% 
-                                t(U[i, ])) %*% L/s2))
-    U[i, ] <- iQ %*% l + t(chol(iQ)) %*% rnorm(R)
-  }
-  for (r in 1:R) {
-    Er <- E - U[, -r, drop = FALSE] %*% L[-r, -r, drop = FALSE] %*% 
-      t(U[, -r, drop = FALSE])
-    l <- sum((Er * (U[, r] %*% t(U[, r])))[upper.tri(Er)])/s2
-    iq <- 1/(1 + sum(((U[, r] %*% t(U[, r]))^2)[upper.tri(Er)])/s2)
-    L[r, r] <- rnorm(1, iq * l, sqrt(iq))
-  }
-  list(U = U, V = U %*% L)
-}
-
-
-# Updating multi. effects in standard amen way assuming
-# same across replicates
-#' @param E.T: Square residual relational matrix
-#' @param U: Current U
-#' @param V: Current v
-#' @param rho: current rho
-#' @param s2: dyadic variace
-#' @param shrink: shrink with prior or not
-rUV_rep_fc <- function (E.T, U, V, rho, s2 = 1, shrink = TRUE) 
-{
-  Time <- dim(E.T)[3]
-  R <- ncol(U)
-  n <- nrow(U)
-  UV <- cbind(U, V)
-  if (shrink) {
-    Suv <- solve(rwish(solve(diag(nrow = 2 * R) + t(UV) %*% 
-                               UV), n + R + 2))
-  }
-  if (!shrink) {
-    Suv <- diag(n, nrow = 2 * R)
-  }
-  Se <- matrix(c(1, rho, rho, 1), 2, 2) * s2
-  iSe2 <- mhalf(solve(Se))
-  g <- iSe2[1, 1]
-  d <- iSe2[1, 2]
-  get.Er <- function(E, UVmr) {
-    return(E - UVmr)
-  }
-  get.Es <- function(Er, g, d) {
-    n <- sqrt(length(Er))
-    return((g^2 + d^2) * matrix(Er, n) + 2 * g * d * matrix(Er, 
-                                                            n, byrow = T))
-  }
-  for (r in sample(1:R)) {
-    UVmr <- tcrossprod(U[, -r], V[, -r])
-    Er.t <- apply(E.T, 3, get.Er, UVmr)
-    Es.t <- apply(Er.t, 2, get.Es, g, d)
-    vr <- V[, r]
-    b0 <- c(Suv[r, -r] %*% solve(Suv[-r, -r]))
-    v0 <- c(Suv[r, r] - b0 %*% Suv[-r, r])
-    m0 <- cbind(U[, -r], V) %*% b0
-    ssv <- max(sum(vr^2), 1e-06)
-    a <- Time * (g^2 + d^2) * ssv + 1/v0
-    c <- -2 * Time * g * d/(a^2 + a * 2 * Time * g * d * 
-                              ssv)
-    Esv.vec <- rowSums(Es.t)
-    nEsv <- sqrt(length(Esv.vec))
-    Esv <- matrix(Esv.vec, nEsv) %*% vr
-    m1 <- Esv/a + c * vr * sum((Esv + m0/v0) * vr) + m0/(a * 
-                                                           v0)
-    ah <- sqrt(1/a)
-    bh <- (sqrt(1/a + ssv * c) - sqrt(1/a))/ssv
-    e <- rnorm(nrow(E.T[, , 1]))
-    U[, r] <- m1 + ah * e + bh * vr * sum(vr * e)
-    ur <- U[, r]
-    rv <- R + r
-    b0 <- c(Suv[rv, -rv] %*% solve(Suv[-rv, -rv]))
-    v0 <- c(Suv[rv, rv] - b0 %*% Suv[-rv, rv])
-    m0 <- cbind(U, V[, -r]) %*% b0
-    ssu <- max(sum(ur^2), 1e-06)
-    a <- Time * (g^2 + d^2) * ssu + 1/v0
-    c <- -2 * Time * g * d/(a^2 + a * 2 * Time * g * d * 
-                              ssu)
-    tEsu <- matrix(Esv.vec, nEsv, byrow = T) %*% ur
-    m1 <- tEsu/a + c * ur * sum((tEsu + m0/v0) * ur) + m0/(a * 
-                                                             v0)
-    ah <- sqrt(1/a)
-    bh <- (sqrt(1/a + ssu * c) - sqrt(1/a))/ssu
-    e <- rnorm(nrow(E.T[, , 1]))
-    V[, r] <- m1 + ah * e + bh * ur * sum(ur * e)
-  }
-  list(U = U, V = V)
-}
-
-# Updating multi. effects in standard amen way 
-#' @param E: Residual matrix
-#' @param U: Current U
-#' @param V: Current v
-#' @param s2: dyadic variace
-#' @param shrink: shrink with prior or not
-
-rUV_fc <- function (E, U, V, rho, s2 = 1, shrink = TRUE) 
-{
-  R <- ncol(U)
-  n <- nrow(U)
-  UV <- cbind(U, V)
-  if (shrink) {
-    Suv <- solve(rwish(solve(diag(nrow = 2 * R) + t(UV) %*% 
-                               UV), n + R + 2))
-  }
-  if (!shrink) {
-    Suv <- diag(n, nrow = 2 * R)
-  }
-  Se <- matrix(c(1, rho, rho, 1), 2, 2) * s2
-  iSe2 <- mhalf(solve(Se))
-  g <- iSe2[1, 1]
-  d <- iSe2[1, 2]
-  for (r in sample(1:R)) {
-    Er <- E - U[, -r] %*% t(V[, -r])
-    Es <- (g^2 + d^2) * Er + 2 * g * d * t(Er)
-    vr <- V[, r]
-    b0 <- c(Suv[r, -r] %*% solve(Suv[-r, -r]))
-    v0 <- c(Suv[r, r] - b0 %*% Suv[-r, r])
-    m0 <- cbind(U[, -r], V) %*% b0
-    ssv <- max(sum(vr^2), 1e-06)
-    a <- (g^2 + d^2) * ssv + 1/v0
-    c <- -2 * g * d/(a^2 + a * 2 * g * d * ssv)
-    Esv <- Es %*% vr
-    m1 <- Esv/a + c * vr * sum((Esv + m0/v0) * vr) + m0/(a * 
-                                                           v0)
-    ah <- sqrt(1/a)
-    bh <- (sqrt(1/a + ssv * c) - sqrt(1/a))/ssv
-    e <- rnorm(nrow(E))
-    U[, r] <- m1 + ah * e + bh * vr * sum(vr * e)
-    ur <- U[, r]
-    rv <- R + r
-    b0 <- c(Suv[rv, -rv] %*% solve(Suv[-rv, -rv]))
-    v0 <- c(Suv[rv, rv] - b0 %*% Suv[-rv, rv])
-    m0 <- cbind(U, V[, -r]) %*% b0
-    ssu <- max(sum(ur^2), 1e-06)
-    a <- (g^2 + d^2) * ssu + 1/v0
-    c <- -2 * g * d/(a^2 + a * 2 * g * d * ssu)
-    tEsu <- t(Es) %*% ur
-    m1 <- tEsu/a + c * ur * sum((tEsu + m0/v0) * ur) + m0/(a * 
-                                                             v0)
-    ah <- sqrt(1/a)
-    bh <- (sqrt(1/a + ssu * c) - sqrt(1/a))/ssu
-    e <- rnorm(nrow(E))
-    V[, r] <- m1 + ah * e + bh * ur * sum(ur * e)
-  }
-  list(U = U, V = V)
-}
-
-
-
 
 ########################################### Censored Standard Binary AMEN
 # this is an updated version of stanndard ammen that uses a censoring parameter
@@ -1506,33 +1506,33 @@ ame_censored_c_RE <- function (Y, Xdyad = NULL, Xrow = NULL, Xcol = NULL, rvar =
 ##### Master function for comm. dep model
 
 # Main function to run MCMC, all covariates are assumed to be dep. on community
-# @param X_r: n x n x p_dep array of row covar
-# @param X_c: n x n x p_dep array of col covar
-# @param X_d: n x n x p_dep_dyad array of dyadic covar
-# @param Y: Observed network (can be binary or censored binary)
-# @parm iter: number of iterations to run mcmc for 
-# @param numGroup: number of communities (also denote k)
-# @param prior_beta_mu: k dimensional vector with prior mean for beta
-# @param prior_beta_var:k x k matrix for prior variance for beta
-# @param prior_alpha_mu: constant for alpha(intercept) mean
-# @param prior_alpha_var:constant for alpha(intercept) var
-# @param start_beta_c: p_dep x k matrix for initializing beta_c
-# @param start_beta_r:  p_dep x k matrix for initializing beta_c
-# @param start_beta_dyad:  p_dep_dyad x k matrix for initializing beta_c
-# @param start_alpha: constant to initialize alpha
-# @param UandV: Default is FALSE, indicates if U and V should be calculated or just U
-# @param symmetricLambda: Default is TRUE, indicates if lambda should be symmetric
-# @param keep.UV: Default is TRUE, store U/V?
-# @param dcor: Default is TRUE, indicates if correlation in error terms should be estimated
-# @param symmetric: Default is FALSE, indicates that Y is not symmetric
-# @param model:  "cbin" or "bin", indicates what type of network Y is 
-# @param odmax: if model = "cbin", this is the max out degree a node can have
-# @param indepBeta: which covariates are indep of community (does not matter if selectDependentBeta = all)
-# @param selectDependentBeta: "all" "some" all means that all covariates will be comm. dep.
-# @param odens = 10: how often to save output
-# @param burnin: amount of burnin iterations
-# @param badInit: start with completely random initialization for U/V
-# @param prior_group_probs: For future use (if we want to change prior prob on group membership)
+#' @param X_r: n x n x p_dep array of row covar
+#' @param X_c: n x n x p_dep array of col covar
+#' @param X_d: n x n x p_dep_dyad array of dyadic covar
+#' @param Y: Observed network (can be binary or censored binary)
+#' @parm iter: number of iterations to run mcmc for 
+#' @param numGroup: number of communities (also denote k)
+#' @param prior_beta_mu: k dimensional vector with prior mean for beta
+#' @param prior_beta_var:k x k matrix for prior variance for beta
+#' @param prior_alpha_mu: constant for alpha(intercept) mean
+#' @param prior_alpha_var:constant for alpha(intercept) var
+#' @param start_beta_c: p_dep x k matrix for initializing beta_c
+#' @param start_beta_r:  p_dep x k matrix for initializing beta_c
+#' @param start_beta_dyad:  p_dep_dyad x k matrix for initializing beta_c
+#' @param start_alpha: constant to initialize alpha
+#' @param UandV: Default is FALSE, indicates if U and V should be calculated or just U
+#' @param symmetricLambda: Default is TRUE, indicates if lambda should be symmetric
+#' @param keep.UV: Default is TRUE, store U/V?
+#' @param dcor: Default is TRUE, indicates if correlation in error terms should be estimated
+#' @param symmetric: Default is FALSE, indicates that Y is not symmetric
+#' @param model:  "cbin" or "bin", indicates what type of network Y is 
+#' @param odmax: if model = "cbin", this is the max out degree a node can have
+#' @param indepBeta: which covariates are indep of community (does not matter if selectDependentBeta = all)
+#' @param selectDependentBeta: "all" "some" all means that all covariates will be comm. dep.
+#' @param odens = 10: how often to save output
+#' @param burnin: amount of burnin iterations
+#' @param badInit: start with completely random initialization for U/V
+#' @param prior_group_probs: For future use (if we want to change prior prob on group membership)
 
 # we only allow for cbin and bin: for binary, you can select alll or only some beta
 # to be community dependent, for censored it is ony all dep. for now
