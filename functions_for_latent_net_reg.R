@@ -4588,9 +4588,7 @@ subAmen_allDepBeta_censored <-function(X_r, X_c, X_d, Y,iter,numGroup, prior_bet
       
       results[[length(results)+1]] <-   lambda_mat
       names(results)[[length(results)]] <- "lambda"
-      # saveRDS(results, sprintf("/hpc/group/volfovskylab/hmm40/CBIN/results_cbin_disprop_comm_censored_AMEN_333_10_%s_OCT%s%s.rds","givenName", n,i))
-      saveRDS(results, sprintf("/hpc/group/volfovskylab/hmm40/CBIN/results_cbin_disprop_comm_censored_AMEN_333_10_%s_JLY21%s%s.rds","givenName", n,i))
-      
+    # save output    
     }
     
   }
@@ -6405,7 +6403,7 @@ subAmen_allDepBeta <-function(X_r, X_c, X_d, Y,iter,numGroup, prior_beta_mu,
       
       results[[length(results)+1]] <-   lambda_mat
       names(results)[[length(results)]] <- "lambda"
-      saveRDS(results, sprintf("/hpchome/volfovskylab/hmm40/CBIN/results_cbin_disprop_comm_censored_AMEN_333_10_%s_OCT%s%s.rds","givenName", n,i))
+      # save output
     }
     
   }
