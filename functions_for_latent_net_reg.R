@@ -1,9 +1,21 @@
 # Code for Submission
 # Function Code
 
-library(latex2exp);library(irlba);library(pbivnorm); library(TruncatedNormal)
-library(amen); library(dplyr); library(ggplot2); library(reshape); library(bayesplot);
-library(R.utils);library(latex2exp)
+list.of.packages <- c("ggplot2", "latex2exp", "irlba",
+                     "pbivnorm", "TruncatedNormal",
+                     "amen", "dplyr", "reshape", "bayesplot",
+                     "R.utils", "MCMCpack", "gridExtra","grid")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+# install needed packages
+if(length(new.packages)) install.packages(new.packages)
+# load packages
+library(latex2exp);library(irlba);library(pbivnorm);
+library(TruncatedNormal)
+library(amen); library(dplyr);
+library(ggplot2); library(reshape); 
+library(bayesplot);
+library(R.utils);library(MCMCpack);library(gridExtra)
+library(grid)
 
 # functions from AMEN version 1.3 in case 
 # there are any version problems
@@ -4589,6 +4601,7 @@ subAmen_allDepBeta_censored <-function(X_r, X_c, X_d, Y,iter,numGroup, prior_bet
       results[[length(results)+1]] <-   lambda_mat
       names(results)[[length(results)]] <- "lambda"
     # save output    
+      assign("tmpresults", results,envir = globalenv())
     }
     
   }
@@ -6404,6 +6417,7 @@ subAmen_allDepBeta <-function(X_r, X_c, X_d, Y,iter,numGroup, prior_beta_mu,
       results[[length(results)+1]] <-   lambda_mat
       names(results)[[length(results)]] <- "lambda"
       # save output
+       assign("tmpresults", results,envir = globalenv())
     }
     
   }
